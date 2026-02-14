@@ -3,7 +3,12 @@ const ctx = canvas.getContext('2d');
 
 let width, height;
 let particles = [];
-const particleCount = 100; // Between 50-100
+// Configuration for the radial pattern
+// More rays, more density to look like lines
+const rays = 35;            // Increased rays for defined lines
+const dotsPerRay = 15;      // Dots along each ray
+const particleCount = rays * dotsPerRay;
+
 let mouse = { x: null, y: null };
 
 // Resize handling
@@ -25,79 +30,142 @@ window.addEventListener('mousemove', (e) => {
 mouse.x = width / 2;
 mouse.y = height / 2;
 
-// Palette of subtle pastel colors to cycle through (Hue values)
-// We will cycle broadly around these or just use HSL logic
-const baseSpeed = 0.001;
 let globalTime = 0;
 
+// Requested Palette (Plum, Dark Blue, Orange, Red-Brown)
+const palette = [
+    '#ffceebff', // Muted Plum
+    '#d6bbffff', // Dark Purple-Grey
+    '#ffa657ff', // Sandy Orange
+    '#ff8c80ff', // Terra Cotta
+    '#b09cffff'  // Deep Slate
+];
+
+// Helper to convert hex to rgb for opacity control
+function hexToRgb(hex) {
+    const bigint = parseInt(hex.slice(1), 16);
+    const r = (bigint >> 16) & 255;
+    const g = (bigint >> 8) & 255;
+    const b = bigint & 255;
+    return `${r}, ${g}, ${b}`;
+}
+
 class Particle {
-    constructor() {
+    constructor(rayIndex, dotIndex, totalRays, totalDots) {
+        // Initialize at random position
         this.x = Math.random() * width;
         this.y = Math.random() * height;
 
-        // Organic Movement Props
-        this.angle = Math.random() * Math.PI * 2; // Initial angle around cursor
-        this.baseRadius = 250 + Math.random() * 500; // Base distance from center
-        this.radiusScale = Math.random(); // How much this particle reacts to the "pulse"
-        this.pulseSpeed = 0.002 + Math.random() * 0.003; // Individual pulse speed
-        this.angleSpeed = (Math.random() - 0.5) * 0.005; // orbit speed
+        // Pattern Positioning (The "Ray" State)
+        // ------------------------------------------
+        // Calculate the ideal angle for this ray
+        const idealAngle = (rayIndex / totalRays) * Math.PI * 2;
 
-        // Inertia
-        this.easing = 0.02 + Math.random() * 0.03;
-        this.size = 2 + Math.random() * 4;
+        // Calculate the ideal distance from center
+        const minRadius = 250;
+        const maxRadius = 650; // Extend further out
+        const radiusStep = (maxRadius - minRadius) / totalDots;
+        const idealRadius = minRadius + (dotIndex * radiusStep);
+
+        // Pattern Imperfection (The "Random" State)
+        // -----------------------------------------
+
+        // TIGHTER ANGLE jitter to sharpen the rays
+        // Previously 0.15, now much smaller to keep them in lines
+        this.angleOffset = (Math.random() - 0.5) * 0.02;
+
+        // Randomize radius more significantly along the ray so they aren't perfect rings
+        this.radiusOffset = (Math.random() - 0.5) * (radiusStep * 0.8);
+
+        this.baseAngle = idealAngle + this.angleOffset;
+        this.baseRadius = idealRadius + this.radiusOffset;
+
+        // Store unique offset for per-ray pulsing
+        this.rayIndex = rayIndex;
+        this.dotIndex = dotIndex;
+
+        // Inertia (smooth movement to target)
+        this.easing = 0.05 + Math.random() * 0.05;
+
+        // Size: Particles get slightly larger further out
+        this.size = 1.5 + (dotIndex / totalDots) * 2;
 
         // Color Props
-        // Assign a random offset in the HSL spectrum
-        this.hueOffset = Math.random() * 360;
-        this.colorSpeed = 0.2 + Math.random() * 0.5;
+        // Assign a random color from the palette
+        this.colorHex = palette[Math.floor(Math.random() * palette.length)];
+        this.colorRgb = hexToRgb(this.colorHex);
+
+        // Individual pulse offset for opacity
+        this.pulseOffset = Math.random() * Math.PI * 2;
     }
 
     update() {
-        // 1. Jellyfish/Bubble Movement: Radius Pulse
-        // The radius expands and contracts over time (sine wave)
-        // Global time + individual offset makes it organic but coordinated
-        const pulse = Math.sin(globalTime * 2 + this.hueOffset) * 50 * this.radiusScale;
-        const currentRadius = this.baseRadius + pulse;
+        // 1. Calculate Target Position in the Pattern
+        // -------------------------------------------
 
-        // 2. Slow Orbiting/Drift
-        this.angle += this.angleSpeed;
+        // ROTATION: Organic back-and-forth (Clockwise <-> Anti-clockwise)
+        // Uses variable sine waves to create a random-feeling slow drift
+        const globalRotation = Math.sin(globalTime * 0.15) * 0.4 + Math.sin(globalTime * 0.42) * 0.15;
 
-        // Calculate target based on mouse + organic offset
-        const targetX = mouse.x + Math.cos(this.angle) * currentRadius;
-        const targetY = mouse.y + Math.sin(this.angle) * currentRadius;
+        // RAY PULSE: Instead of a ripple ring, we want the whole ray to breathe or move
+        // We use the rayIndex to offset the phase, so each ray pulses independently
+        // and we use dotIndex to make it flow outward
 
-        // 3. Follow Mouse with Inertia
+        // This pulse affects the RADIUS (pushing out and in)
+        // Coordinated movement along the ray
+        const rayPulse = Math.sin(globalTime * 2 + this.rayIndex * 0.5) * 20;
+
+        // Adding a flow movement along the ray
+        const flow = Math.sin(globalTime * 3 + this.dotIndex * 0.2) * 5;
+
+        const linearRadius = this.baseRadius + rayPulse + flow;
+        const currentAngle = this.baseAngle + globalRotation;
+
+        // SHAPE TRANSFORMATION: Circle -> Rounded Square (Squircle)
+        // ---------------------------------------------------------
+        // We use the Superellipse formula to stretch the radius at the corners
+        // Formula: scale = 1 / ( |cos(theta)|^n + |sin(theta)|^n )^(1/n)
+        // n = 2 is a circle, n = 4 is a rounded square
+        const roundness = 4; // Adjustable: Higher = sharper corners
+        const absCos = Math.abs(Math.cos(currentAngle));
+        const absSin = Math.abs(Math.sin(currentAngle));
+
+        // Calculate scale factor to morph circle radius into square radius
+        const shapeScale = 1 / Math.pow(Math.pow(absCos, roundness) + Math.pow(absSin, roundness), 1 / roundness);
+
+        // Apply shape scale to the radius
+        const squareRadius = linearRadius * shapeScale;
+
+        // Calculate where this particle *wants* to be
+        const targetX = mouse.x + Math.cos(currentAngle) * squareRadius;
+        const targetY = mouse.y + Math.sin(currentAngle) * squareRadius;
+
+        // 2. Move Particle with Inertia
         this.x += (targetX - this.x) * this.easing;
         this.y += (targetY - this.y) * this.easing;
 
-        // 4. Color Cycling - Google/Confetti Palette
-        // We pick a base Hue from the palette + a tiny random drift
-        // Palette: Blue (217), Red (355), Yellow (45), Green (150)
-        // Ensure hue is constant for the particle but saturation changes
+        // 3. SIZE ANIMATION (Traveling Wave)
+        // ----------------------------------
+        // Base size logic: larger outside (preserved but animated)
+        // We create a "wave" of size that travels from center to outside (or vice versa)
+        // by offsetting sin wave with dotIndex.
 
-        // Define palette logic in update or constructor? 
-        // Better to set Base Hue in constructor and just vary saturation here.
-        // But since I can't edit constructor in this chunk easily without context, 
-        // I will use a deterministic hash or just assign it based on index/random property.
-        // Let's rely on 'hueOffset' which is random 0-360. We can map it to nearest palette color.
+        const sizeWave = Math.sin(globalTime * 4 - this.dotIndex * 0.5); // " - dotIndex" makes wave move out
 
-        let baseHue;
-        if (this.hueOffset < 90) baseHue = 45; // Yellow
-        else if (this.hueOffset < 180) baseHue = 150; // Green
-        else if (this.hueOffset < 270) baseHue = 217; // Blue
-        else baseHue = 355; // Red
+        // Map wave (-1 to 1) to a size range, e.g., 0.5x to 2.5x original
+        // We also keep the "larger outer" trend as a baseline
+        const baseSizeMetric = 1.5 + (this.dotIndex / 15) * 2; // Original static logic reference
 
-        // Oscillate saturation significantly as requested
-        // From pastel (low sat) to vibrant (high sat)
-        // Range: 50% to 100%
-        const saturationPulse = Math.sin(globalTime * 4 + this.hueOffset);
-        const currentSaturation = 75 + (saturationPulse * 25); // 75 +/- 25 -> [50, 100]
+        // Combine baseline with wave
+        this.size = baseSizeMetric + (sizeWave * 1.5);
 
-        // Lightness slightly varying for depth
-        const lightness = 60 + Math.sin(globalTime + this.hueOffset) * 10;
+        // Clamp minimum size so they don't disappear negatively
+        if (this.size < 0.5) this.size = 0.5;
 
-        // Using HSLA
-        this.color = `hsla(${baseHue}, ${currentSaturation}%, ${lightness}%, 0.8)`;
+        // 4. Color Logic
+        // Pulse opacity for "breathing" effect
+        const opacity = 0.6 + Math.sin(globalTime * 2 + this.pulseOffset) * 0.2;
+        this.color = `rgba(${this.colorRgb}, ${opacity})`;
     }
 
     draw() {
@@ -110,14 +178,17 @@ class Particle {
 
 function init() {
     particles = [];
-    for (let i = 0; i < particleCount; i++) {
-        particles.push(new Particle());
+    // Create particles in a radial grid pattern
+    for (let i = 0; i < rays; i++) {
+        for (let j = 0; j < dotsPerRay; j++) {
+            particles.push(new Particle(i, j, rays, dotsPerRay));
+        }
     }
 }
 
 function animate() {
     ctx.clearRect(0, 0, width, height);
-    globalTime += 0.01; // Advance time
+    globalTime += 0.01;
 
     particles.forEach(p => {
         p.update();
